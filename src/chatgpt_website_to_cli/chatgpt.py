@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from typing import Optional
 
 from chatgpt_website_to_cli.browser import ChatgptBridge
@@ -30,11 +29,14 @@ class ChatgptAutomation:
         self,
         bridge: ChatgptBridge,
         max_wait_seconds: int = 180,
-        poll_interval: float = 3.0,
+        poll_interval: float = 1.5,
     ) -> None:
         self.bridge = bridge
         self.max_wait_seconds = max_wait_seconds
         self.poll_interval = poll_interval
+        self.tab_id: Optional[int] = None
+        self._initial_response_count: int = 0
+        self._initial_response_len: int = 0
 
     async def find_or_open_chatgpt_tab(self) -> int:
         """Find an existing Chatgpt tab or open a new one.
@@ -49,6 +51,7 @@ class ChatgptAutomation:
         if tabs:
             tab = tabs[0]
             tab_id = tab["id"]
+            self.tab_id = tab_id
             logger.info("Found Chatgpt tab: %s (id=%d)", tab.get("title", ""), tab_id)
             # Activate the tab and bring window to focus
             await self.bridge.send_command("activate_tab", tabId=tab_id)
@@ -57,6 +60,7 @@ class ChatgptAutomation:
             logger.info("No Chatgpt tab found. Opening a new one...")
             result = await self.bridge.send_command("open_chatgpt_tab", timeout=30)
             tab_id = result["tabId"]
+            self.tab_id = tab_id
             logger.info("Opened new Chatgpt tab (id=%d)", tab_id)
             return tab_id
 
@@ -81,11 +85,25 @@ class ChatgptAutomation:
         """
         logger.info("Sending prompt to Chatgpt (%d chars)...", len(prompt_text))
 
+        # Check initial state before sending
+        try:
+            initial_status = await self.bridge.send_command(
+                "check_response_status",
+                tabId=self.tab_id,
+                timeout=5,
+            )
+            self._initial_response_count = initial_status.get("responseCount", 0)
+            self._initial_response_len = initial_status.get("latestResponseLength", 0)
+        except Exception:
+            self._initial_response_count = 0
+            self._initial_response_len = 0
+
         for attempt in range(1, max_retries + 1):
             try:
                 await self.bridge.send_command(
                     "send_prompt",
                     prompt=prompt_text,
+                    tabId=self.tab_id,
                     timeout=30,
                 )
                 logger.info(
@@ -117,18 +135,24 @@ class ChatgptAutomation:
 
         logger.info("Waiting for Chatgpt response (up to %ds)...", self.max_wait_seconds)
 
-        # Initial delay to let generation start
-        await asyncio.sleep(5)
+        # Brief delay to allow prompt submission and generation start
+        await asyncio.sleep(1.0)
 
         start_time = asyncio.get_event_loop().time()
         was_generating = False
-        last_code_block_count = 0
+        last_response_length = 0
         stable_count = 0
+        has_response = False
+        response_length = 0
+        initial_count = getattr(self, "_initial_response_count", 0)
+        initial_len = getattr(self, "_initial_response_len", 0)
 
         while (asyncio.get_event_loop().time() - start_time) < self.max_wait_seconds:
             try:
                 status = await self.bridge.send_command(
-                    "check_response_status", timeout=10
+                    "check_response_status",
+                    tabId=self.tab_id,
+                    timeout=10,
                 )
             except Exception as exc:
                 logger.debug("Status check failed: %s", exc)
@@ -136,47 +160,72 @@ class ChatgptAutomation:
                 continue
 
             generating = status.get("generating", False)
-            code_block_count = status.get("codeBlockCount", 0)
             has_response = status.get("hasResponse", False)
+            response_count = status.get("responseCount", 0)
+            response_length = status.get("latestResponseLength", 0)
+            code_block_count = status.get("codeBlockCount", 0)
             elapsed = int(asyncio.get_event_loop().time() - start_time)
 
             if generating:
                 was_generating = True
                 stable_count = 0
-                logger.debug("Still generating... (%ds elapsed)", elapsed)
+                logger.debug(
+                    "Still generating... (len=%d, code_blocks=%d, %ds elapsed)",
+                    response_length,
+                    code_block_count,
+                    elapsed,
+                )
             elif was_generating:
-                # Was generating but stopped — response is likely complete
-                logger.info("Generation complete after %ds.", elapsed)
-                await asyncio.sleep(2)  # Grace period for DOM to settle
+                # Was generating but stopped — generation is complete!
+                logger.info(
+                    "Generation complete after %ds (len=%d, code_blocks=%d).",
+                    elapsed,
+                    response_length,
+                    code_block_count,
+                )
+                await asyncio.sleep(1.0)  # Grace period for DOM to settle
                 return
-            elif has_response:
-                # Response appeared without us detecting a loading state
-                # Wait for code block count to stabilize
-                if code_block_count == last_code_block_count and code_block_count > 0:
-                    stable_count += 1
-                    if stable_count >= 3:
-                        logger.info(
-                            "Response appears stable (%d code blocks, %ds elapsed).",
-                            code_block_count,
+            elif has_response and response_length > 0:
+                # Response appeared without explicit generating indicator
+                # Check if a new message appeared or content grew beyond initial
+                is_new_or_grown = (
+                    response_count > initial_count
+                    or response_length > initial_len
+                    or initial_count == 0
+                )
+                if is_new_or_grown:
+                    if response_length == last_response_length:
+                        stable_count += 1
+                        if stable_count >= 2:
+                            logger.info(
+                                "Response stabilized after %ds (len=%d, code_blocks=%d).",
+                                elapsed,
+                                response_length,
+                                code_block_count,
+                            )
+                            await asyncio.sleep(0.5)
+                            return
+                    else:
+                        stable_count = 0
+                        logger.debug(
+                            "Response content changing (len=%d, %ds elapsed)...",
+                            response_length,
                             elapsed,
                         )
-                        await asyncio.sleep(2)
-                        return
-                else:
-                    stable_count = 0
 
-            last_code_block_count = code_block_count
+            last_response_length = response_length
             await asyncio.sleep(self.poll_interval)
 
-        if not was_generating:
-            logger.warning(
-                "No loading indicator detected. Response may already be present."
+        if was_generating or (has_response and response_length > 0):
+            logger.info(
+                "Proceeding with available response after %ds.",
+                self.max_wait_seconds,
             )
-            await asyncio.sleep(5)
-        else:
-            logger.warning(
-                "Timed out after %ds while waiting for response.", self.max_wait_seconds
-            )
+            return
+
+        logger.warning(
+            "Timed out after %ds while waiting for response.", self.max_wait_seconds
+        )
 
     async def extract_last_code_block(
         self,
@@ -204,7 +253,9 @@ class ChatgptAutomation:
         for attempt in range(1, max_retries + 1):
             try:
                 result = await self.bridge.send_command(
-                    "extract_last_code_block", timeout=15
+                    "extract_last_code_block",
+                    tabId=self.tab_id,
+                    timeout=15,
                 )
                 text = result.get("text")
                 if text:
@@ -256,7 +307,9 @@ class ChatgptAutomation:
         for attempt in range(1, max_retries + 1):
             try:
                 result = await self.bridge.send_command(
-                    "extract_full_response", timeout=15
+                    "extract_full_response",
+                    tabId=self.tab_id,
+                    timeout=15,
                 )
                 text = result.get("text")
                 if text:

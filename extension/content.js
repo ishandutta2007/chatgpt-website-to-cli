@@ -5,259 +5,458 @@
  * by the background service worker (forwarded from the Python CLI).
  */
 
-chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  const { type } = message;
+(function () {
+  if (window.__chatgpt_bridge_injected) {
+    return;
+  }
+  window.__chatgpt_bridge_injected = true;
 
-  const handlers = {
-    send_prompt: () => handleSendPrompt(message.prompt),
-    check_response_status: () => handleCheckResponseStatus(),
-    extract_last_code_block: () => handleExtractLastCodeBlock(),
-    extract_full_response: () => handleExtractFullResponse(),
-  };
+  chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+    const { type } = message;
 
-  const handler = handlers[type];
-  if (!handler) return false;
-
-  handler()
-    .then((data) => sendResponse(data))
-    .catch((err) => sendResponse({ __error: true, error: err.message }));
-
-  return true; // Keep message channel open for async sendResponse
-});
-
-// ── Prompt Submission ────────────────────────────────────────────────────
-
-async function handleSendPrompt(prompt) {
-  // Try multiple selectors to find the prompt input
-  const selectors = [
-    'textarea',
-    'div[contenteditable="true"]',
-    '[role="textbox"]',
-  ];
-
-  let inputElement = null;
-  for (const sel of selectors) {
-    const el = document.querySelector(sel);
-    if (el && isVisible(el)) {
-      inputElement = el;
-      break;
+    if (type === 'ping_content') {
+      sendResponse({ pong: true });
+      return false;
     }
-  }
 
-  if (!inputElement) {
-    throw new Error(
-      'Could not find the prompt input element. Make sure chatgpt.com is fully loaded and you are logged in.'
-    );
-  }
+    const handlers = {
+      send_prompt: () => handleSendPrompt(message.prompt),
+      check_response_status: () => handleCheckResponseStatus(),
+      extract_last_code_block: () => handleExtractLastCodeBlock(),
+      extract_full_response: () => handleExtractFullResponse(),
+    };
 
-  // Set the prompt text using React-compatible methods
-  const tag = inputElement.tagName.toLowerCase();
+    const handler = handlers[type];
+    if (!handler) return false;
 
-  if (tag === 'textarea') {
-    // React overrides the value setter, so we need the native one
-    const nativeSetter = Object.getOwnPropertyDescriptor(
-      window.HTMLTextAreaElement.prototype,
-      'value'
-    ).set;
-    nativeSetter.call(inputElement, prompt);
-    inputElement.dispatchEvent(new Event('input', { bubbles: true }));
-    inputElement.dispatchEvent(new Event('change', { bubbles: true }));
-  } else if (inputElement.isContentEditable) {
-    inputElement.focus();
-    // Select all existing content and replace
-    const selection = window.getSelection();
-    const range = document.createRange();
-    range.selectNodeContents(inputElement);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.execCommand('insertText', false, prompt);
-  } else {
-    // Generic input fallback
-    inputElement.value = prompt;
-    inputElement.dispatchEvent(new Event('input', { bubbles: true }));
-    inputElement.dispatchEvent(new Event('change', { bubbles: true }));
-  }
+    handler()
+      .then((data) => sendResponse(data || {}))
+      .catch((err) => sendResponse({ __error: true, error: err.message || String(err) }));
 
-  // Wait for React/framework to process the input
-  await sleep(500);
+    return true; // Keep message channel open for async sendResponse
+  });
 
-  // Submit by pressing Enter
-  const enterEventInit = {
-    key: 'Enter',
-    code: 'Enter',
-    keyCode: 13,
-    which: 13,
-    bubbles: true,
-    cancelable: true,
-  };
-  inputElement.dispatchEvent(new KeyboardEvent('keydown', enterEventInit));
-  inputElement.dispatchEvent(new KeyboardEvent('keypress', enterEventInit));
-  inputElement.dispatchEvent(new KeyboardEvent('keyup', enterEventInit));
+  // ── Prompt Submission ──────────────────────────────────────────────────
 
-  // Also try submitting via a nearby submit button as fallback
-  await sleep(300);
-  const submitBtn = document.querySelector(
-    'button[type="submit"], button[aria-label*="Send" i], button[data-testid*="send" i]'
-  );
-  if (submitBtn && isVisible(submitBtn)) {
-    submitBtn.click();
-  }
+  function findPromptInput() {
+    const selectors = [
+      '#prompt-textarea',
+      'textarea#prompt-textarea',
+      'div#prompt-textarea',
+      'div.ProseMirror#prompt-textarea',
+      'div.ProseMirror',
+      'div[contenteditable="true"]',
+      'textarea[data-id="root"]',
+      '[role="textbox"]',
+      'form textarea',
+      'textarea',
+    ];
 
-  return { submitted: true };
-}
-
-// ── Response Status Check ────────────────────────────────────────────────
-
-async function handleCheckResponseStatus() {
-  // Check for loading/generating indicators
-  const stopSelectors = [
-    'button[aria-label*="Stop" i]',
-    '[data-testid="stop-button"]',
-    'button[aria-label*="stop generating" i]',
-  ];
-  const spinnerSelectors = ['.animate-spin', 'svg.animate-spin', '[class*="loading"]'];
-
-  let generating = false;
-
-  for (const sel of stopSelectors) {
-    const el = document.querySelector(sel);
-    if (el && isVisible(el)) {
-      generating = true;
-      break;
-    }
-  }
-
-  if (!generating) {
-    for (const sel of spinnerSelectors) {
+    for (const sel of selectors) {
       const el = document.querySelector(sel);
-      if (el && isVisible(el)) {
-        generating = true;
+      if (el && isVisible(el)) return el;
+    }
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  function findSendButton() {
+    const selectors = [
+      'button[data-testid="send-button"]',
+      'button[data-testid="fruitjuice-send-button"]',
+      'button[data-testid*="send" i]',
+      '#composer-submit-button',
+      'button[aria-label*="Send prompt" i]',
+      'button[aria-label*="Send message" i]',
+      'button[aria-label*="Send" i]',
+      'button[aria-label*="Submit" i]',
+      'form button[type="submit"]',
+      'button[type="submit"]',
+    ];
+
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el && isVisible(el)) return el;
+    }
+    for (const sel of selectors) {
+      const el = document.querySelector(sel);
+      if (el) return el;
+    }
+    return null;
+  }
+
+  async function handleSendPrompt(prompt) {
+    const inputElement = findPromptInput();
+    if (!inputElement) {
+      throw new Error(
+        'Could not find the prompt input element. Make sure chatgpt.com is fully loaded and you are logged in.'
+      );
+    }
+
+    const tag = inputElement.tagName.toLowerCase();
+    inputElement.focus();
+
+    if (tag === 'textarea') {
+      const nativeSetter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        'value'
+      )?.set;
+      if (nativeSetter) {
+        nativeSetter.call(inputElement, prompt);
+      } else {
+        inputElement.value = prompt;
+      }
+      inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+      inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+    } else if (
+      inputElement.isContentEditable ||
+      inputElement.getAttribute('contenteditable') === 'true'
+    ) {
+      // Select all existing content
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(inputElement);
+      selection.removeAllRanges();
+      selection.addRange(range);
+
+      // Try beforeinput event
+      try {
+        const beforeInputEvent = new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          inputType: 'insertText',
+          data: prompt,
+        });
+        inputElement.dispatchEvent(beforeInputEvent);
+      } catch (e) {
+        /* ignore */
+      }
+
+      // Try execCommand
+      try {
+        document.execCommand('insertText', false, prompt);
+      } catch (e) {
+        /* ignore */
+      }
+
+      // If input is still empty or doesn't match
+      if (!inputElement.textContent || inputElement.textContent.trim() !== prompt.trim()) {
+        const lines = prompt.split('\n');
+        inputElement.innerHTML = lines
+          .map((l) => `<p>${escapeHtml(l) || '<br>'}</p>`)
+          .join('');
+      }
+
+      inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+      inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+    } else {
+      inputElement.value = prompt;
+      inputElement.dispatchEvent(new Event('input', { bubbles: true }));
+      inputElement.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    await sleep(400);
+
+    // Wait briefly for send button to become enabled
+    let submitBtn = findSendButton();
+    for (let i = 0; i < 15; i++) {
+      if (submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true') {
         break;
       }
+      await sleep(100);
+      submitBtn = findSendButton();
     }
-  }
 
-  // Count code blocks
-  const codeBlocks = document.querySelectorAll('pre code, pre, div.code-block code');
-  const visibleCodeBlocks = Array.from(codeBlocks).filter(isVisible);
-
-  // Check for response content
-  const responseSelectors = [
-    'div[data-testid="message-content"]',
-    'div.message-content',
-    'div.markdown',
-    'div[class*="response"]',
-    'div[class*="message"]',
-  ];
-
-  let hasResponse = false;
-  for (const sel of responseSelectors) {
-    const els = document.querySelectorAll(sel);
-    if (els.length > 0) {
-      hasResponse = true;
-      break;
+    // Try clicking send button
+    if (submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true') {
+      submitBtn.click();
     }
+
+    // Also simulate Enter key
+    const enterEventInit = {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 13,
+      which: 13,
+      bubbles: true,
+      cancelable: true,
+    };
+    inputElement.dispatchEvent(new KeyboardEvent('keydown', enterEventInit));
+    inputElement.dispatchEvent(new KeyboardEvent('keypress', enterEventInit));
+    inputElement.dispatchEvent(new KeyboardEvent('keyup', enterEventInit));
+
+    await sleep(300);
+    submitBtn = findSendButton();
+    if (submitBtn && !submitBtn.disabled && submitBtn.getAttribute('aria-disabled') !== 'true') {
+      submitBtn.click();
+    }
+
+    return { submitted: true };
   }
 
-  return {
-    generating,
-    codeBlockCount: visibleCodeBlocks.length,
-    hasResponse,
-  };
-}
+  // ── Response Status Check ──────────────────────────────────────────────
 
-// ── Code Block Extraction ────────────────────────────────────────────────
+  function isGenerating() {
+    // 1. Stop button in the composer or page
+    const stopSelectors = [
+      'button[data-testid="stop-button"]',
+      'button[data-testid="fruitjuice-stop-button"]',
+      'button[data-testid*="stop-button" i]',
+      'button[aria-label="Stop generating"]',
+      'button[aria-label="Stop streaming"]',
+      'button[aria-label="Stop"]',
+    ];
+    for (const sel of stopSelectors) {
+      const el = document.querySelector(sel);
+      if (el && isVisible(el)) return true;
+    }
 
-async function handleExtractLastCodeBlock() {
-  const codeBlocks = Array.from(
-    document.querySelectorAll('pre code, pre, code.hljs, div.code-block code')
-  ).filter(isVisible);
+    // 2. Active streaming indicators on the message
+    const streamingSelectors = [
+      '.result-streaming',
+      'div.result-streaming',
+      '[data-is-streaming="true"]',
+      '[data-testid="streaming-animation"]',
+      '.streaming-animation',
+    ];
+    for (const sel of streamingSelectors) {
+      const el = document.querySelector(sel);
+      if (el && isVisible(el)) return true;
+    }
 
-  if (codeBlocks.length === 0) {
-    return { text: null, error: 'No code blocks found' };
-  }
-
-  const lastBlock = codeBlocks[codeBlocks.length - 1];
-
-  // Strategy 1: Try to find and click a copy button near the code block
-  const copiedText = await tryCopyButton(lastBlock);
-  if (copiedText) {
-    return { text: copiedText, method: 'copy_button' };
-  }
-
-  // Strategy 2: Read text content directly
-  const text = lastBlock.innerText || lastBlock.textContent;
-  if (text && text.trim()) {
-    return { text: text.trim(), method: 'innerText' };
-  }
-
-  return { text: null, error: 'Code block found but empty' };
-}
-
-async function tryCopyButton(codeBlockElement) {
-  // Walk up the DOM looking for a copy button
-  let container = codeBlockElement;
-  for (let i = 0; i < 6; i++) {
-    container = container.parentElement;
-    if (!container || container === document.body) break;
-
-    const btn = container.querySelector(
-      'button[aria-label*="Copy" i], button[title*="Copy" i], button.copy-button, button[class*="copy" i]'
+    // 3. Active thinking animation (only while spinner is actively spinning)
+    const activeSpinners = document.querySelectorAll(
+      '[data-testid*="reasoning"] .animate-spin, button[aria-label*="Thinking"] .animate-spin, .agent-turn .animate-spin'
     );
+    for (const el of activeSpinners) {
+      if (isVisible(el)) return true;
+    }
 
-    if (btn && isVisible(btn)) {
-      try {
-        btn.click();
-        await sleep(300);
-        const text = await navigator.clipboard.readText();
-        if (text && text.trim()) {
-          return text.trim();
+    return false;
+  }
+
+  function getAssistantMessages() {
+    // 1. Direct author role attributes
+    const roleSelectors = [
+      '[data-message-author-role="assistant"]',
+      '[data-message-author="assistant"]',
+      '[data-role="assistant"]',
+      '.agent-turn',
+    ];
+    for (const sel of roleSelectors) {
+      const els = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+      if (els.length > 0) return els;
+    }
+
+    // 2. Articles containing assistant content (and not user content)
+    const articles = Array.from(document.querySelectorAll('article')).filter(isVisible);
+    const assistantArticles = articles.filter(
+      (art) =>
+        art.querySelector('[data-message-author-role="assistant"]') ||
+        art.querySelector('.agent-turn') ||
+        !art.querySelector('[data-message-author-role="user"]')
+    );
+    if (assistantArticles.length > 0) return assistantArticles;
+
+    // 3. Fallback message content containers
+    const fallbackSelectors = [
+      'div[data-testid="message-content"]',
+      'div.message-content',
+      'div.markdown.prose',
+      'div.markdown',
+    ];
+    for (const sel of fallbackSelectors) {
+      const found = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+      if (found.length > 0) return found;
+    }
+
+    return [];
+  }
+
+  async function handleCheckResponseStatus() {
+    const generating = isGenerating();
+    const assistantMessages = getAssistantMessages();
+    const hasResponse = assistantMessages.length > 0;
+
+    let latestResponseText = '';
+    let codeBlockCount = 0;
+
+    if (hasResponse) {
+      const latestMessage = assistantMessages[assistantMessages.length - 1];
+      latestResponseText = (latestMessage.innerText || latestMessage.textContent || '').trim();
+
+      const codeBlocks = Array.from(
+        latestMessage.querySelectorAll(
+          'pre code, code[class*="language-"], code.hljs, div.code-block code, pre'
+        )
+      ).filter(isVisible);
+      codeBlockCount = codeBlocks.length;
+    } else {
+      const codeBlocks = Array.from(
+        document.querySelectorAll('pre code, pre, code.hljs, div.code-block code')
+      ).filter(isVisible);
+      codeBlockCount = codeBlocks.length;
+    }
+
+    return {
+      generating,
+      hasResponse,
+      responseCount: assistantMessages.length,
+      latestResponseLength: latestResponseText.length,
+      latestResponseSnippet: latestResponseText.slice(0, 100),
+      codeBlockCount,
+    };
+  }
+
+  // ── Code Block Extraction ──────────────────────────────────────────────
+
+  async function handleExtractLastCodeBlock() {
+    const assistantMessages = getAssistantMessages();
+    let searchScope = document;
+
+    if (assistantMessages.length > 0) {
+      searchScope = assistantMessages[assistantMessages.length - 1];
+    }
+
+    // Find all code blocks within the scope
+    let codeElements = Array.from(
+      searchScope.querySelectorAll(
+        'pre code, code[class*="language-"], code.hljs, div.code-block code'
+      )
+    ).filter(isVisible);
+
+    if (codeElements.length === 0) {
+      codeElements = Array.from(searchScope.querySelectorAll('pre')).filter(isVisible);
+    }
+
+    // If still none in the latest message, search entire document
+    if (codeElements.length === 0 && searchScope !== document) {
+      codeElements = Array.from(
+        document.querySelectorAll(
+          'pre code, code[class*="language-"], code.hljs, div.code-block code, pre'
+        )
+      ).filter(isVisible);
+    }
+
+    if (codeElements.length === 0) {
+      return { text: null, error: 'No code blocks found' };
+    }
+
+    const lastBlock = codeElements[codeElements.length - 1];
+
+    // Strategy 1: Try copy button
+    const copiedText = await tryCopyButton(lastBlock);
+    if (copiedText) {
+      return { text: copiedText, method: 'copy_button' };
+    }
+
+    // Strategy 2: Direct text extraction
+    let text = lastBlock.innerText || lastBlock.textContent || '';
+    text = cleanCodeText(text);
+
+    if (text && text.trim()) {
+      return { text: text.trim(), method: 'innerText' };
+    }
+
+    return { text: null, error: 'Code block found but empty' };
+  }
+
+  function cleanCodeText(text) {
+    if (!text) return '';
+    return text
+      .replace(/^(?:[a-zA-Z0-9_#+-]+\s+)?(?:Copy|Copied|Copy code)\s*\n+/i, '')
+      .trim();
+  }
+
+  async function tryCopyButton(codeBlockElement) {
+    let container = codeBlockElement;
+    for (let i = 0; i < 6; i++) {
+      container = container.parentElement;
+      if (!container || container === document.body) break;
+
+      const btn = container.querySelector(
+        'button[aria-label*="Copy" i], button[title*="Copy" i], button.copy-button, button[class*="copy" i]'
+      );
+
+      if (btn && isVisible(btn)) {
+        try {
+          btn.click();
+          await sleep(300);
+          const text = await navigator.clipboard.readText();
+          if (text && text.trim()) {
+            return text.trim();
+          }
+        } catch (e) {
+          console.warn('[Chatgpt CLI Bridge] Clipboard read failed:', e);
         }
-      } catch (e) {
-        console.warn('[Chatgpt CLI Bridge] Clipboard read failed:', e);
       }
     }
+    return null;
   }
-  return null;
-}
 
-// ── Full Response Extraction ─────────────────────────────────────────────
+  // ── Full Response Extraction ───────────────────────────────────────────
 
-async function handleExtractFullResponse() {
-  const selectors = [
-    'div[data-testid="message-content"]',
-    'div.message-content',
-    'div.markdown',
-    'div[class*="response"]',
-  ];
-
-  for (const sel of selectors) {
-    const elements = Array.from(document.querySelectorAll(sel)).filter(isVisible);
-    if (elements.length > 0) {
-      const lastEl = elements[elements.length - 1];
+  async function handleExtractFullResponse() {
+    const assistantMessages = getAssistantMessages();
+    if (assistantMessages.length > 0) {
+      const lastEl = assistantMessages[assistantMessages.length - 1];
       const text = lastEl.innerText || lastEl.textContent;
       if (text && text.trim()) {
         return { text: text.trim() };
       }
     }
+
+    const selectors = [
+      'div[data-testid="message-content"]',
+      'div.message-content',
+      'div.markdown.prose',
+      'div.markdown',
+      'div[class*="response"]',
+    ];
+
+    for (const sel of selectors) {
+      const elements = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+      if (elements.length > 0) {
+        const lastEl = elements[elements.length - 1];
+        const text = lastEl.innerText || lastEl.textContent;
+        if (text && text.trim()) {
+          return { text: text.trim() };
+        }
+      }
+    }
+
+    return { text: null, error: 'No response containers found' };
   }
 
-  return { text: null, error: 'No response containers found' };
-}
+  // ── Utilities ──────────────────────────────────────────────────────────
 
-// ── Utilities ────────────────────────────────────────────────────────────
+  function isVisible(el) {
+    if (!el) return false;
+    const style = window.getComputedStyle(el);
+    if (
+      style.display === 'none' ||
+      style.visibility === 'hidden' ||
+      style.opacity === '0'
+    ) {
+      return false;
+    }
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 || rect.height > 0 || el.getClientRects().length > 0;
+  }
 
-function isVisible(el) {
-  if (!el) return false;
-  const style = window.getComputedStyle(el);
-  return (
-    style.display !== 'none' &&
-    style.visibility !== 'hidden' &&
-    style.opacity !== '0' &&
-    el.offsetParent !== null
-  );
-}
+  function escapeHtml(str) {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+})();

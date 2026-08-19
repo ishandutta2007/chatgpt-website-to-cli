@@ -88,6 +88,13 @@ function sendWsResponse(id, success, data = {}, error = null) {
   ws.send(JSON.stringify(response));
 }
 
+const CHATGPT_URL_PATTERNS = [
+  'https://chatgpt.com/*',
+  'https://*.chatgpt.com/*',
+  'https://chat.openai.com/*',
+  'https://*.openai.com/*',
+];
+
 async function handleCommand(msg) {
   const { id, type, ...params } = msg;
   if (!id || !type) return;
@@ -99,7 +106,7 @@ async function handleCommand(msg) {
         break;
 
       case 'find_chatgpt_tab': {
-        const tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+        const tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
         const tabsData = tabs.map((t) => ({
           id: t.id,
           url: t.url,
@@ -145,7 +152,17 @@ async function handleCommand(msg) {
       case 'check_response_status':
       case 'extract_last_code_block':
       case 'extract_full_response': {
-        const targetTab = await findChatgptTab();
+        let targetTab = null;
+        if (params.tabId) {
+          try {
+            targetTab = await chrome.tabs.get(params.tabId);
+          } catch (e) {
+            targetTab = null;
+          }
+        }
+        if (!targetTab) {
+          targetTab = await findChatgptTab();
+        }
         if (!targetTab) {
           throw new Error('No Chatgpt tab found. Open chatgpt.com first.');
         }
@@ -179,14 +196,21 @@ async function handleCommand(msg) {
 async function findChatgptTab() {
   // Prefer the active Chatgpt tab in the current window
   let tabs = await chrome.tabs.query({
-    url: 'https://chatgpt.com/*',
+    url: CHATGPT_URL_PATTERNS,
     active: true,
     currentWindow: true,
   });
   if (tabs.length > 0) return tabs[0];
 
+  // Fall back to active Chatgpt tab in any window
+  tabs = await chrome.tabs.query({
+    url: CHATGPT_URL_PATTERNS,
+    active: true,
+  });
+  if (tabs.length > 0) return tabs[0];
+
   // Fall back to any Chatgpt tab
-  tabs = await chrome.tabs.query({ url: 'https://chatgpt.com/*' });
+  tabs = await chrome.tabs.query({ url: CHATGPT_URL_PATTERNS });
   return tabs.length > 0 ? tabs[0] : null;
 }
 
@@ -196,6 +220,18 @@ async function ensureContentScript(tabId) {
    * script won't be injected. Try to inject it programmatically.
    */
   try {
+    // Quick test if content script is already responsive
+    const pingResult = await new Promise((resolve) => {
+      chrome.tabs.sendMessage(tabId, { type: 'ping_content' }, (res) => {
+        if (chrome.runtime.lastError || !res) {
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+    });
+    if (pingResult) return;
+
     await chrome.scripting.executeScript({
       target: { tabId },
       files: ['content.js'],
