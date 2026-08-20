@@ -108,23 +108,22 @@ class ChatgptAutomation:
                 )
                 logger.info(
                     "Prompt submitted successfully (attempt %d/%d).",
-                    attempt, max_retries,
+                    attempt,
+                    max_retries,
                 )
                 return
             except (ConnectionError, TimeoutError, RuntimeError, OSError) as exc:
                 logger.warning(
                     "send_prompt failed (attempt %d/%d): %s",
-                    attempt, max_retries, exc,
+                    attempt,
+                    max_retries,
+                    exc,
                 )
                 if attempt < max_retries:
-                    logger.info(
-                        "Retrying send_prompt in %.1fs...", retry_delay
-                    )
+                    logger.info("Retrying send_prompt in %.1fs...", retry_delay)
                     await asyncio.sleep(retry_delay)
 
-        raise RuntimeError(
-            f"Failed to send prompt after {max_retries} attempts."
-        )
+        raise RuntimeError(f"Failed to send prompt after {max_retries} attempts.")
 
     async def wait_for_response(self) -> None:
         """Wait for Chatgpt to finish generating its response.
@@ -133,7 +132,9 @@ class ChatgptAutomation:
         generation is complete or the timeout is reached.
         """
 
-        logger.info("Waiting for Chatgpt response (up to %ds)...", self.max_wait_seconds)
+        logger.info(
+            "Waiting for Chatgpt response (up to %ds)...", self.max_wait_seconds
+        )
 
         # Brief delay to allow prompt submission and generation start
         await asyncio.sleep(1.0)
@@ -262,29 +263,31 @@ class ChatgptAutomation:
                     method = result.get("method", "unknown")
                     logger.info(
                         "Extracted code block (%d chars) via %s (attempt %d/%d).",
-                        len(text), method, attempt, max_retries,
+                        len(text),
+                        method,
+                        attempt,
+                        max_retries,
                     )
                     return text.strip()
                 else:
                     logger.warning(
                         "No code blocks found (attempt %d/%d).",
-                        attempt, max_retries,
+                        attempt,
+                        max_retries,
                     )
             except (RuntimeError, ConnectionError, OSError) as exc:
                 logger.warning(
                     "Code block extraction failed (attempt %d/%d): %s",
-                    attempt, max_retries, exc,
+                    attempt,
+                    max_retries,
+                    exc,
                 )
 
             if attempt < max_retries:
-                logger.info(
-                    "Retrying code block extraction in %.1fs...", retry_delay
-                )
+                logger.info("Retrying code block extraction in %.1fs...", retry_delay)
                 await asyncio.sleep(retry_delay)
 
-        logger.warning(
-            "Could not extract code block after %d attempts.", max_retries
-        )
+        logger.warning("Could not extract code block after %d attempts.", max_retries)
         return None
 
     async def extract_full_response(
@@ -315,18 +318,23 @@ class ChatgptAutomation:
                 if text:
                     logger.info(
                         "Extracted full response (%d chars, attempt %d/%d).",
-                        len(text), attempt, max_retries,
+                        len(text),
+                        attempt,
+                        max_retries,
                     )
                     return text.strip()
                 else:
                     logger.warning(
                         "No response content found (attempt %d/%d).",
-                        attempt, max_retries,
+                        attempt,
+                        max_retries,
                     )
             except (RuntimeError, ConnectionError, OSError) as exc:
                 logger.warning(
                     "Full response extraction failed (attempt %d/%d): %s",
-                    attempt, max_retries, exc,
+                    attempt,
+                    max_retries,
+                    exc,
                 )
 
             if attempt < max_retries:

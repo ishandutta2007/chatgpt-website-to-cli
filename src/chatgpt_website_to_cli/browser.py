@@ -130,7 +130,9 @@ class ChatgptBridge:
                     logger.warning(
                         "Extension disconnected (attempt %d/%d). "
                         "Waiting up to %.0fs for reconnect...",
-                        attempt, max_retries, reconnect_timeout,
+                        attempt,
+                        max_retries,
+                        reconnect_timeout,
                     )
                 # Clear and re-wait for the connected event
                 try:
@@ -157,7 +159,10 @@ class ChatgptBridge:
                 await self._extension_ws.send(json.dumps(command))
                 logger.debug(
                     "Sent command: %s (id=%s, attempt %d/%d)",
-                    cmd_type, msg_id[:8], attempt, max_retries,
+                    cmd_type,
+                    msg_id[:8],
+                    attempt,
+                    max_retries,
                 )
 
                 result = await asyncio.wait_for(future, timeout=timeout)
@@ -173,7 +178,10 @@ class ChatgptBridge:
                 last_exc = exc
                 logger.warning(
                     "Command '%s' failed (attempt %d/%d): %s",
-                    cmd_type, attempt, max_retries, exc,
+                    cmd_type,
+                    attempt,
+                    max_retries,
+                    exc,
                 )
                 await asyncio.sleep(1)  # Brief pause before retry
             except asyncio.TimeoutError:
@@ -183,7 +191,10 @@ class ChatgptBridge:
                 )
                 logger.warning(
                     "Command '%s' timed out after %.0fs (attempt %d/%d).",
-                    cmd_type, timeout, attempt, max_retries,
+                    cmd_type,
+                    timeout,
+                    attempt,
+                    max_retries,
                 )
                 await asyncio.sleep(1)
             finally:

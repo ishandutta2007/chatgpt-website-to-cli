@@ -171,7 +171,9 @@ async def async_main(args: argparse.Namespace) -> int:
 
     # ── Start bridge server ───────────────────────────────────────────
     browser_name = "Chrome" if args.browser == "chrome" else "Edge"
-    extensions_url = "chrome://extensions" if args.browser == "chrome" else "edge://extensions"
+    extensions_url = (
+        "chrome://extensions" if args.browser == "chrome" else "edge://extensions"
+    )
 
     bridge = ChatgptBridge(port=args.port, browser_name=browser_name)
 
