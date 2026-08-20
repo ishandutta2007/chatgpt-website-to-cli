@@ -288,17 +288,11 @@
       const latestMessage = assistantMessages[assistantMessages.length - 1];
       latestResponseText = (latestMessage.innerText || latestMessage.textContent || '').trim();
 
-      const codeBlocks = Array.from(
-        latestMessage.querySelectorAll(
-          'pre code, code[class*="language-"], code.hljs, div.code-block code, pre'
-        )
-      ).filter(isVisible);
-      codeBlockCount = codeBlocks.length;
+      const topPres = getTopLevelCodeBlocks(latestMessage);
+      codeBlockCount = topPres.length;
     } else {
-      const codeBlocks = Array.from(
-        document.querySelectorAll('pre code, pre, code.hljs, div.code-block code')
-      ).filter(isVisible);
-      codeBlockCount = codeBlocks.length;
+      const topPres = getTopLevelCodeBlocks(document);
+      codeBlockCount = topPres.length;
     }
 
     return {
@@ -313,6 +307,54 @@
 
   // ── Code Block Extraction ──────────────────────────────────────────────
 
+  function getTopLevelCodeBlocks(scope) {
+    const allPres = Array.from(scope.querySelectorAll('pre')).filter(isVisible);
+    // Filter out any <pre> nested inside another <pre>
+    const topLevelPres = allPres.filter((pre) => {
+      let parent = pre.parentElement;
+      while (parent && parent !== scope && parent !== document.body) {
+        if (parent.tagName && parent.tagName.toLowerCase() === 'pre') return false;
+        parent = parent.parentElement;
+      }
+      return true;
+    });
+
+    return topLevelPres;
+  }
+
+  function findCopyButtonForPre(pre) {
+    // 1. Inside the <pre> itself
+    const insideBtn = pre.querySelector(
+      'button[aria-label*="Copy" i], button[title*="Copy" i], button.copy-button, button[class*="copy" i]'
+    );
+    if (insideBtn && isVisible(insideBtn)) return insideBtn;
+
+    // 2. In immediate parent container or header bar above <pre>
+    let container = pre.parentElement;
+    for (let i = 0; i < 4; i++) {
+      if (!container || container === document.body) break;
+      const btn = container.querySelector(
+        'button[aria-label*="Copy" i], button[title*="Copy" i], button.copy-button, button[class*="copy" i]'
+      );
+      if (btn && isVisible(btn)) return btn;
+      container = container.parentElement;
+    }
+
+    // 3. Sibling element header (e.g. previous sibling div)
+    if (pre.previousElementSibling) {
+      const btn = pre.previousElementSibling.querySelector(
+        'button[aria-label*="Copy" i], button[title*="Copy" i], button.copy-button, button[class*="copy" i], button'
+      );
+      if (btn && isVisible(btn)) return btn;
+    }
+
+    // 4. Any button inside the <pre>
+    const anyBtn = pre.querySelector('button');
+    if (anyBtn && isVisible(anyBtn)) return anyBtn;
+
+    return null;
+  }
+
   async function handleExtractLastCodeBlock() {
     const assistantMessages = getAssistantMessages();
     let searchScope = document;
@@ -321,44 +363,44 @@
       searchScope = assistantMessages[assistantMessages.length - 1];
     }
 
-    // Find all code blocks within the scope
-    let codeElements = Array.from(
-      searchScope.querySelectorAll(
-        'pre code, code[class*="language-"], code.hljs, div.code-block code'
-      )
-    ).filter(isVisible);
+    let topPres = getTopLevelCodeBlocks(searchScope);
 
-    if (codeElements.length === 0) {
-      codeElements = Array.from(searchScope.querySelectorAll('pre')).filter(isVisible);
+    // If none in the latest message, search whole document
+    if (topPres.length === 0 && searchScope !== document) {
+      topPres = getTopLevelCodeBlocks(document);
     }
 
-    // If still none in the latest message, search entire document
-    if (codeElements.length === 0 && searchScope !== document) {
-      codeElements = Array.from(
-        document.querySelectorAll(
-          'pre code, code[class*="language-"], code.hljs, div.code-block code, pre'
-        )
-      ).filter(isVisible);
-    }
-
-    if (codeElements.length === 0) {
+    if (topPres.length === 0) {
       return { text: null, error: 'No code blocks found' };
     }
 
-    const lastBlock = codeElements[codeElements.length - 1];
+    const lastPre = topPres[topPres.length - 1];
 
-    // Strategy 1: Try copy button
-    const copiedText = await tryCopyButton(lastBlock);
-    if (copiedText) {
-      return { text: copiedText, method: 'copy_button' };
+    // Strategy 1: Click the "Copy code" button on top of the code block
+    const copyBtn = findCopyButtonForPre(lastPre);
+    if (copyBtn) {
+      try {
+        copyBtn.click();
+        await sleep(300);
+        const copiedText = await navigator.clipboard.readText();
+        if (copiedText && copiedText.trim()) {
+          return { text: copiedText.trim(), method: 'copy_button' };
+        }
+      } catch (e) {
+        console.warn('[Chatgpt CLI Bridge] Copy button / clipboard read failed:', e);
+      }
     }
 
-    // Strategy 2: Direct text extraction
-    let text = lastBlock.innerText || lastBlock.textContent || '';
+    // Strategy 2: Extract directly from the top-level <code> element of <pre>
+    const codeEl =
+      lastPre.querySelector(':scope > code') ||
+      lastPre.querySelector('code') ||
+      lastPre;
+    let text = codeEl.innerText || codeEl.textContent || '';
     text = cleanCodeText(text);
 
     if (text && text.trim()) {
-      return { text: text.trim(), method: 'innerText' };
+      return { text: text.trim(), method: 'dom_code_element' };
     }
 
     return { text: null, error: 'Code block found but empty' };
@@ -369,32 +411,6 @@
     return text
       .replace(/^(?:[a-zA-Z0-9_#+-]+\s+)?(?:Copy|Copied|Copy code)\s*\n+/i, '')
       .trim();
-  }
-
-  async function tryCopyButton(codeBlockElement) {
-    let container = codeBlockElement;
-    for (let i = 0; i < 6; i++) {
-      container = container.parentElement;
-      if (!container || container === document.body) break;
-
-      const btn = container.querySelector(
-        'button[aria-label*="Copy" i], button[title*="Copy" i], button.copy-button, button[class*="copy" i]'
-      );
-
-      if (btn && isVisible(btn)) {
-        try {
-          btn.click();
-          await sleep(300);
-          const text = await navigator.clipboard.readText();
-          if (text && text.trim()) {
-            return text.trim();
-          }
-        } catch (e) {
-          console.warn('[Chatgpt CLI Bridge] Clipboard read failed:', e);
-        }
-      }
-    }
-    return null;
   }
 
   // ── Full Response Extraction ───────────────────────────────────────────
