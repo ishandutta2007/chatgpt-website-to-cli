@@ -15,6 +15,7 @@ import logging
 import sys
 from pathlib import Path
 
+import chardet
 from rich.console import Console
 from rich.logging import RichHandler
 from rich.panel import Panel
@@ -41,13 +42,28 @@ def _setup_logging(verbose: bool) -> None:
     logging.getLogger("websockets").setLevel(logging.WARNING)
 
 
+def _detect_file_encoding(path: Path) -> str:
+    """Detect encoding of an existing file using chardet, defaulting to utf-8."""
+    if path.is_file() and path.stat().st_size > 0:
+        try:
+            raw = path.read_bytes()
+            detected = chardet.detect(raw)
+            encoding = detected.get("encoding")
+            if encoding:
+                return encoding
+        except Exception:
+            pass
+    return "utf-8"
+
+
 def _read_prompt_file(filepath: str) -> str:
     """Read and validate the prompt file."""
     path = Path(filepath).resolve()
     if not path.is_file():
         raise FileNotFoundError(f"Prompt file not found: {path}")
 
-    text = path.read_text(encoding="utf-8").strip()
+    encoding = _detect_file_encoding(path)
+    text = path.read_text(encoding=encoding).strip()
     if not text:
         raise ValueError(f"Prompt file is empty: {path}")
 
@@ -59,7 +75,8 @@ def _write_output(content: str, output_path: str | None) -> None:
     if output_path:
         path = Path(output_path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as f:
+        encoding = _detect_file_encoding(path)
+        with open(path, "a", encoding=encoding) as f:
             f.write(content)
             f.write("\n")
         console.print(f"\n[green]+[/green] Output appended to [bold]{path}[/bold]")
