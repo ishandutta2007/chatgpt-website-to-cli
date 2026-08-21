@@ -292,8 +292,12 @@ class ChatgptAutomation:
                 await asyncio.sleep(retry_delay)
 
         if fallback_to_full:
-            logger.info("Code block extraction yielded nothing; falling back to full response...")
-            return await self.extract_full_response(max_retries=max_retries, retry_delay=retry_delay)
+            logger.info(
+                "Code block extraction yielded nothing; falling back to full response..."
+            )
+            return await self.extract_full_response(
+                max_retries=max_retries, retry_delay=retry_delay
+            )
 
         logger.warning("Could not extract code block after %d attempts.", max_retries)
         return None
