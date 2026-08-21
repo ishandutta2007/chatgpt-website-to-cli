@@ -232,12 +232,14 @@ class ChatgptAutomation:
         self,
         max_retries: int = 5,
         retry_delay: float = 3.0,
+        fallback_to_full: bool = True,
     ) -> Optional[str]:
         """Extract the text of the last code block from the Chatgpt response.
 
         The extension tries multiple strategies:
         1. Click the copy button on the code block
         2. Read innerText directly
+        3. Fall back to extracting the full response text if no code block exists
 
         Retries up to ``max_retries`` times on transient failures (empty
         result, connection errors, or extension errors) with a delay between
@@ -246,10 +248,12 @@ class ChatgptAutomation:
         Args:
             max_retries: Maximum number of extraction attempts.
             retry_delay: Seconds to wait between retries.
+            fallback_to_full: If True, fall back to extracting the full response text
+                if no code block is found after all retries.
 
         Returns:
-            The code block text, or None if no code blocks were found after
-            all retries.
+            The code block text, full response text fallback, or None if no
+            response could be extracted.
         """
         for attempt in range(1, max_retries + 1):
             try:
@@ -286,6 +290,10 @@ class ChatgptAutomation:
             if attempt < max_retries:
                 logger.info("Retrying code block extraction in %.1fs...", retry_delay)
                 await asyncio.sleep(retry_delay)
+
+        if fallback_to_full:
+            logger.info("Code block extraction yielded nothing; falling back to full response...")
+            return await self.extract_full_response(max_retries=max_retries, retry_delay=retry_delay)
 
         logger.warning("Could not extract code block after %d attempts.", max_retries)
         return None

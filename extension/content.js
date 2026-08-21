@@ -370,40 +370,44 @@
       topPres = getTopLevelCodeBlocks(document);
     }
 
-    if (topPres.length === 0) {
-      return { text: null, error: 'No code blocks found' };
-    }
+    if (topPres.length > 0) {
+      const lastPre = topPres[topPres.length - 1];
 
-    const lastPre = topPres[topPres.length - 1];
-
-    // Strategy 1: Click the "Copy code" button on top of the code block
-    const copyBtn = findCopyButtonForPre(lastPre);
-    if (copyBtn) {
-      try {
-        copyBtn.click();
-        await sleep(300);
-        const copiedText = await navigator.clipboard.readText();
-        if (copiedText && copiedText.trim()) {
-          return { text: copiedText.trim(), method: 'copy_button' };
+      // Strategy 1: Click the "Copy code" button on top of the code block
+      const copyBtn = findCopyButtonForPre(lastPre);
+      if (copyBtn) {
+        try {
+          copyBtn.click();
+          await sleep(300);
+          const copiedText = await navigator.clipboard.readText();
+          if (copiedText && copiedText.trim()) {
+            return { text: copiedText.trim(), method: 'copy_button' };
+          }
+        } catch (e) {
+          console.warn('[Chatgpt CLI Bridge] Copy button / clipboard read failed:', e);
         }
-      } catch (e) {
-        console.warn('[Chatgpt CLI Bridge] Copy button / clipboard read failed:', e);
+      }
+
+      // Strategy 2: Extract directly from the top-level <code> element of <pre>
+      const codeEl =
+        lastPre.querySelector(':scope > code') ||
+        lastPre.querySelector('code') ||
+        lastPre;
+      let text = codeEl.innerText || codeEl.textContent || '';
+      text = cleanCodeText(text);
+
+      if (text && text.trim()) {
+        return { text: text.trim(), method: 'dom_code_element' };
       }
     }
 
-    // Strategy 2: Extract directly from the top-level <code> element of <pre>
-    const codeEl =
-      lastPre.querySelector(':scope > code') ||
-      lastPre.querySelector('code') ||
-      lastPre;
-    let text = codeEl.innerText || codeEl.textContent || '';
-    text = cleanCodeText(text);
-
-    if (text && text.trim()) {
-      return { text: text.trim(), method: 'dom_code_element' };
+    // Fallback: If no code block found or code block was empty, use the full response text
+    const fullResp = await handleExtractFullResponse();
+    if (fullResp && fullResp.text) {
+      return { text: fullResp.text, method: 'fallback_full_response' };
     }
 
-    return { text: null, error: 'Code block found but empty' };
+    return { text: null, error: 'No code blocks or response text found' };
   }
 
   function cleanCodeText(text) {
