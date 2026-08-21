@@ -43,13 +43,29 @@ def _setup_logging(verbose: bool) -> None:
 
 
 def _detect_file_encoding(path: Path) -> str:
-    """Detect encoding of an existing file using chardet, defaulting to utf-8."""
+    """Detect encoding of an existing file using BOM checks and chardet, defaulting to utf-8."""
     if path.is_file() and path.stat().st_size > 0:
         try:
             raw = path.read_bytes()
+            # Fast check for Byte Order Marks (BOM)
+            if raw.startswith(b"\xff\xfe"):
+                return "utf-16-le"
+            if raw.startswith(b"\xfe\xff"):
+                return "utf-16-be"
+            if raw.startswith(b"\xef\xbb\xbf"):
+                return "utf-8-sig"
+
+            # Check for UTF-16 null-byte pattern (e.g. Windows PowerShell text)
+            if len(raw) >= 2 and (raw[1::2].count(b"\x00") > len(raw) // 4):
+                return "utf-16-le"
+
             detected = chardet.detect(raw)
             encoding = detected.get("encoding")
             if encoding:
+                encoding_lower = encoding.lower().replace("_", "-")
+                # ASCII files should be treated as UTF-8 so Unicode content can be appended safely
+                if encoding_lower in ("ascii", "us-ascii"):
+                    return "utf-8"
                 return encoding
         except Exception:
             pass
@@ -63,7 +79,10 @@ def _read_prompt_file(filepath: str) -> str:
         raise FileNotFoundError(f"Prompt file not found: {path}")
 
     encoding = _detect_file_encoding(path)
-    text = path.read_text(encoding=encoding).strip()
+    try:
+        text = path.read_text(encoding=encoding).strip()
+    except (UnicodeDecodeError, LookupError):
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
     if not text:
         raise ValueError(f"Prompt file is empty: {path}")
 
@@ -76,9 +95,14 @@ def _write_output(content: str, output_path: str | None) -> None:
         path = Path(output_path).resolve()
         path.parent.mkdir(parents=True, exist_ok=True)
         encoding = _detect_file_encoding(path)
-        with open(path, "a", encoding=encoding) as f:
-            f.write(content)
-            f.write("\n")
+        try:
+            with open(path, "a", encoding=encoding, errors="replace") as f:
+                f.write(content)
+                f.write("\n")
+        except (UnicodeEncodeError, LookupError):
+            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(content)
+                f.write("\n")
         console.print(f"\n[green]+[/green] Output appended to [bold]{path}[/bold]")
     else:
         console.print()
